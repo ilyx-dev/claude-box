@@ -232,6 +232,7 @@ setup_env() {
   [ "$(env_get BROWSER)" = 1 ] && profs="browser"
   [ "$(env_get HOST_DOCKER)" = ro ] && profs="${profs:+$profs,}docker"
   env_set COMPOSE_PROFILES "$profs"
+  set_compose_files
   ok "профиль $PROFILE: браузер=$(env_get BROWSER), docker хоста=$(env_get HOST_DOCKER), доступ к хосту=$(env_get HOST_ACCESS) (ssh $(env_get HOST_ALIAS)), рабочая папка $ws"
 }
 
@@ -306,9 +307,10 @@ preflight() {
   local mine=0 e0=$ERRS port pname
   docker inspect "$pfx-gateway" >/dev/null 2>&1 && mine=1
   for pname in TTYD_PORT NOVNC_PORT; do
+    [ "$pname" = NOVNC_PORT ] && [ "$br" != 1 ] && continue   # без браузера noVNC не публикуется
     port=$(env_get "$pname")
     [ -n "$port" ] || { [ "$pname" = TTYD_PORT ] && port=7681 || port=6080; }
-    # шлюз публикует оба порта всегда (noVNC — даже без браузера); свой работающий шлюз — не конфликт
+    # свой работающий шлюз — не конфликт
     if [ "$mine" = 0 ] && port_busy "$port"; then err "порт $port занят — поменяйте $pname в .env"; fi
   done
   [ "$ERRS" -gt "$e0" ] || ok "имена контейнеров ($pfx-*) и порты свободны"
@@ -379,6 +381,14 @@ pull_code() {
 }
 
 # ═══════════════════════════════════════════════ 5. сборка и запуск
+# COMPOSE_FILE в .env: порт noVNC публикуется только с браузером (docker-compose.browser.yml).
+# Раз COMPOSE_FILE задан, compose сам override не подхватит — добавляем его явно (диск Mac, ваши правки).
+set_compose_files() {
+  local f="docker-compose.yml"
+  [ "$(env_get BROWSER)" = 1 ] && f="$f:docker-compose.browser.yml"
+  [ -f docker-compose.override.yml ] && f="$f:docker-compose.override.yml"
+  env_set COMPOSE_FILE "$f"
+}
 compose_up() { # с одной попыткой пересоздать сеть, если изменилась её конфигурация
   local out
   if out=$(docker compose up -d ${1+"$@"} 2>&1); then echo "$out" | tail -n 20; return 0; fi
@@ -395,6 +405,7 @@ build_and_start() {
     say "Домашняя папка Mac для агента (только чтение, секреты скрыты)"
     bash scripts/gen-mac-mounts.sh
   fi
+  set_compose_files   # override мог только что появиться
 
   say "Сборка образов (первый раз — 5–15 минут)"
   docker compose build --pull

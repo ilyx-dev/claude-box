@@ -48,7 +48,7 @@ services:
     ports:
       # публикуются на шлюзе (agent и browser живут в его сетевом namespace); по умолчанию только localhost
       - "${BIND_ADDR:-127.0.0.1}:${TTYD_PORT:-7681}:7681"    # веб-терминал (tmux + Claude Code)
-      - "${BIND_ADDR:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"   # noVNC: браузер агента (если BROWSER=1)
+      # noVNC (6080) — только с браузером: docker-compose.browser.yml, его подключает install.sh через COMPOSE_FILE
     volumes:
       - geo:/shared
     networks: [egress]

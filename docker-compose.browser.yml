@@ -1,0 +1,7 @@
+# Порт noVNC (браузер агента) — только при BROWSER=1. Файл подключает install.sh через COMPOSE_FILE в .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.browser.yml[:docker-compose.override.yml]
+# Порт публикуется на шлюзе: браузер живёт в его сетевом namespace. По умолчанию только localhost.
+services:
+  gateway:
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"   # noVNC: браузер агента
