@@ -239,6 +239,14 @@ setup_env() {
 # ═══════════════════════════════════════════════ 2. проверка системы
 preflight() {
   say "Проверка системы"
+  # --force запоминается в .env (FORCE_RESOURCES=1): иначе --update и самообновление из агента падали бы
+  # на той же нехватке ресурсов, которую пользователь уже принял. Отменить — убрать ключ из .env.
+  if [ "$FORCE" != 1 ] && [ "$(env_get FORCE_RESOURCES)" = 1 ]; then
+    FORCE=1; echo "  (FORCE_RESOURCES=1 в .env: нехватка RAM/диска — предупреждение, а не ошибка)"
+  fi
+  if [ "$FORCE" = 1 ] && [ "$ACTION" != check ] && [ -f .env ] && [ "$(env_get FORCE_RESOURCES)" != 1 ]; then
+    env_set FORCE_RESOURCES 1
+  fi
   local br; br=$(env_get BROWSER); [ -n "$br" ] || br=$( [ -n "$SET_BROWSER" ] && echo "$SET_BROWSER" || echo 0 )
   case "$OS" in
     Darwin) ok "macOS $(sw_vers -productVersion 2>/dev/null || echo ?) ($ARCH)" ;;
