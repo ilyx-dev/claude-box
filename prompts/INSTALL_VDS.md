@@ -37,8 +37,14 @@
 
 ## Фаза 2. Код и проверка системы
 - Папка: `/opt/claude-box` (если есть sudo) или `~/claude-box`. **Не внутри** будущей рабочей папки агента.
-- Код: `rsync -az --delete --exclude .env --exclude install.log --exclude '.backup/' --exclude 'report-*' --exclude 'tests/.tmp/' --exclude /CLAUDE.md --exclude /START.md --exclude /docs/ /workspace/claude-box/ <сервер>:<папка>/`
+- Код: `rsync -az --no-owner --no-group --delete --exclude .env --exclude install.log --exclude '.backup/' --exclude 'report-*' --exclude 'tests/.tmp/' --exclude /CLAUDE.md --exclude /START.md --exclude /docs/ /workspace/claude-box/ <сервер>:<папка>/`
   (локальные рабочие файлы агента — `CLAUDE.md`, `START.md`, `docs/` — на сервер не нужны).
+  `--no-owner --no-group` обязательны: без них файлы получат uid агента из контейнера (1000), и любой
+  пользователь хоста с этим uid сможет менять `install.sh`, который запускает root. Проверка:
+  `ssh … 'find <папка> ! -user $(id -un) | wc -l'` → 0.
+- Если репозиторий публичный или у сервера есть к нему доступ — после rsync переключи `origin` на HTTPS
+  (`git remote set-url origin https://github.com/<владелец>/claude-box.git && git config --unset core.sshCommand`):
+  тогда сервер обновляется сам (`./install.sh --update`, в том числе из агента на сервере через `ssh host`).
 - `ssh … 'cd <папка> && ./install.sh --check --profile server'` (+ `--browser`, если пользователь хочет браузер).
   Покажи итог. Ошибки (TUN, Docker, порты, имена, подсети) — разбери с пользователем до установки.
   Конфликт имён с чужим контейнером — `BOX_PREFIX=cbox` в `.env`; конфликт подсети — другая `DOCKER_SUBNET`.
@@ -67,5 +73,6 @@
   или туннель `ssh -N -L 17681:127.0.0.1:7681 <сервер>` → http://localhost:17681 (пароль — `TTYD_PASSWORD` в `.env` на сервере).
 - Первый вход: `/login` в окне `claude` (ссылку пользователь открывает у себя, код вставляет обратно); в окне `rc`
   один раз ответить `y`. После этого «claude-box-vds» появится в приложении Claude.
-- Обновление в будущем: rsync кода + `ssh … 'cd <папка> && ./install.sh --update --no-pull --detach'`.
+- Обновление в будущем: `git push`, затем `ssh … 'cd <папка> && ./install.sh --update --detach'` (git pull с GitHub);
+  если `origin` на сервере недоступен — rsync кода (флаги из фазы 2) + `./install.sh --update --no-pull --detach`.
 - Если по ходу менялся код — запись в `CHANGELOG.md`, патч-версия в `VERSION`, коммит.

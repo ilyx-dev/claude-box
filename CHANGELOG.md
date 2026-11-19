@@ -1,5 +1,13 @@
 # Изменения
 
+## 1.0.2 — 2026-11-19
+Первая живая установка профиля `server` на VDS (Ubuntu 24.04, x86_64, Docker 28.5): установка, leak-test,
+kill-switch, docker-ro — без ошибок.
+- `prompts/INSTALL_VDS.md`: rsync кода на сервер — с `--no-owner --no-group`. Без них папка установки
+  принадлежала uid агента из контейнера (1000), и пользователь хоста с этим uid мог бы менять `install.sh`,
+  который запускает root; git под root к тому же отказывался работать («dubious ownership»).
+- `prompts/INSTALL_VDS.md`: после rsync `origin` на сервере — HTTPS-адрес репозитория, обновление — `./install.sh --update`.
+
 ## 1.0.1 — 2026-11-19
 - `tests/install-dryrun.sh` больше не зависит от машины, на которой его запускают: заглушки `ss` и `ip`,
   путь к TUN — через `CB_TEST_TUN_DEV` (только для тестов; `install.sh` предупреждает, если она задана).
