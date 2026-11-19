@@ -295,7 +295,9 @@ preflight() {
   if [ "${mem:-0}" -lt "$need_mem" ]; then
     if [ "$FORCE" = 1 ]; then warn "RAM ${mem} МБ меньше минимума $need_mem МБ для установки $what (--force)"
     else err "RAM ${mem} МБ меньше минимума $need_mem МБ для установки $what$( [ "$br" = 1 ] && echo ' — уберите браузер (--no-browser)' ) или добавьте --force"; fi
-  elif [ "$mem" -lt "$rec_mem" ]; then warn "RAM ${mem} МБ (+swap ${swp} МБ): работать будет, рекомендуется $rec_mem МБ$( [ "$OS" = Linux ] && [ "${swp:-0}" -lt 2000 ] && echo ' или swap 2–4 ГБ' )"
+  # машина «на 4 ГБ» показывает чуть меньше 4000 МБ (часть забирает ядро/VM) — рекомендацию сверяем с допуском 5%;
+  # swap на Mac не измеряется (он внутри VM Docker), поэтому и не показывается
+  elif [ "$mem" -lt $((rec_mem * 95 / 100)) ]; then warn "RAM ${mem} МБ$( [ "$OS" = Linux ] && echo " (+swap ${swp} МБ)" ): работать будет, рекомендуется $rec_mem МБ$( [ "$OS" = Linux ] && [ "${swp:-0}" -lt 2000 ] && echo ' или swap 2–4 ГБ' )"
   else ok "RAM ${mem} МБ$( [ "$OS" = Linux ] && echo " (+swap ${swp} МБ)" )"; fi
   if [ "${disk:-0}" -lt "$need_disk" ]; then
     if [ "$FORCE" = 1 ]; then warn "свободно ${disk} ГБ, нужно от $need_disk ГБ (--force)"; else err "свободно ${disk} ГБ на диске Docker, нужно от $need_disk ГБ"; fi
@@ -443,10 +445,20 @@ build_and_start() {
   compose_up || die "не удалось запустить сервисы (docker compose logs)"
   after=$(docker inspect -f '{{.Id}}' "$GWN" 2>/dev/null || echo none)
   if [ "$before" != none ] && [ "$before" != "$after" ]; then
-    echo "  шлюз пересоздан — пересоздаю зависимые контейнеры, чтобы они подключились к его новой сети"
-    local deps="agent"; [ "$(env_get BROWSER)" = 1 ] && deps="$deps browser"
-    # shellcheck disable=SC2086
-    docker compose up -d --force-recreate $deps
+    # Обычно compose сам пересоздаёт агента и браузер под новый шлюз. Добиваем только тех, кто остался в сети
+    # старого: лишнее пересоздание — ещё один перезапуск агента, Remote Control и чатов.
+    local deps="" s c
+    for s in agent $( [ "$(env_get BROWSER)" = 1 ] && echo browser ); do
+      c=$(docker compose ps -q "$s" 2>/dev/null | head -n1)
+      if [ -z "$c" ] || [ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$c" 2>/dev/null)" != "container:$after" ]; then
+        deps="$deps $s"
+      fi
+    done
+    if [ -n "$deps" ]; then
+      echo "  шлюз пересоздан — переподключаю к его новой сети:$deps"
+      # shellcheck disable=SC2086
+      docker compose up -d --force-recreate $deps
+    fi
   fi
   sleep 10
   ok "контейнеры: $(docker compose ps --format '{{.Name}}={{.State}}' 2>/dev/null | tr '\n' ' ')"
