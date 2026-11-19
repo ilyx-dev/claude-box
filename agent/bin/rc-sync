@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# rc-sync — поднимает недостающие серверы Remote Control (окна tmux).
+#   RC_SERVER=single   (по умолчанию) — один сервер на всю /workspace, имя $RC_NAME, окно "rc"
+#   RC_SERVER=projects — сервер на каждый проект (окна "rc-<проект>"), список — RC_PROJECTS:
+#                        auto (папки /workspace/* с CLAUDE.md, кроме _*, .*) или site,bot
+#   RC_SERVER=off      — не запускать
+set -uo pipefail
+[[ -f /etc/profile.d/00-geo.sh ]] && . /etc/profile.d/00-geo.sh
+[[ -f /etc/profile.d/10-agent.sh ]] && . /etc/profile.d/10-agent.sh
+tmux has-session -t main 2>/dev/null || exit 0
+existing=$(tmux list-windows -t main -F '#W' 2>/dev/null)
+
+case "${RC_SERVER:-single}" in
+  off) exit 0 ;;
+  single)
+    name=${RC_NAME:-claude-box}
+    if ! grep -qx "rc" <<<"$existing"; then
+      tmux new-window -d -t main -n rc -c /workspace "/usr/local/bin/rc-serve /workspace '$name'"
+      echo "Remote Control: $name (/workspace)"
+    fi
+    ;;
+  projects)
+    mode=${RC_PROJECTS:-auto}
+    projects=()
+    if [[ $mode == auto ]]; then
+      for d in /workspace/*/; do
+        n=$(basename "$d")
+        [[ $n == _* || $n == .* || $n == downloads ]] && continue
+        [[ -f $d/CLAUDE.md ]] && projects+=("$n")
+      done
+    else
+      IFS=', ' read -r -a projects <<<"$mode"
+    fi
+    for p in "${projects[@]}"; do
+      [[ $p =~ ^[A-Za-z0-9._-]+$ ]] || continue
+      grep -qx "rc-$p" <<<"$existing" && continue
+      mkdir -p "/workspace/$p"
+      tmux new-window -d -t main -n "rc-$p" -c "/workspace/$p" "/usr/local/bin/rc-serve /workspace/$p '${RC_PREFIX-mac-}$p'"
+      echo "Remote Control: ${RC_PREFIX-mac-}$p"
+    done
+    ;;
+  *) echo "rc-sync: неизвестный RC_SERVER=${RC_SERVER}" >&2; exit 1 ;;
+esac

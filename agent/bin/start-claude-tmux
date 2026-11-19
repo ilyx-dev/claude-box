@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Создаёт tmux-сессию "main" при старте контейнера:
+#   окно claude  — общая сессия Claude Code в /workspace (с Remote Control),
+#   окно shell   — обычный shell,
+#   окна rc-*    — серверы Remote Control по проектам (rc-sync).
+# Сессия живёт независимо от того, открыт ли веб-терминал.
+set -euo pipefail
+cd /workspace
+if ! tmux has-session -t main 2>/dev/null; then
+  # секреты веб-интерфейса не должны попадать в окружение агента
+  env -u TTYD_PASSWORD -u TTYD_USER \
+    tmux new-session -d -s main -n claude -x 200 -y 50 -c /workspace /usr/local/bin/claude-session
+  tmux new-window -d -t main -n shell -c /workspace
+fi
+/usr/local/bin/rc-sync || true
+tmux select-window -t main:claude

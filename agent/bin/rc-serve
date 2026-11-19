@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# rc-serve <папка> <имя> — сервер Remote Control для папки; перезапускается при обрыве связи.
+# git-репозиторий -> каждая новая сессия в своём worktree; иначе все сессии в этой папке.
+# Ctrl-C — остановить сервер и выйти в shell этого окна.
+dir=${1:?usage: rc-serve <dir> <name>}
+name=${2:?usage: rc-serve <dir> <name>}
+[[ -f /etc/profile.d/00-geo.sh ]] && . /etc/profile.d/00-geo.sh
+[[ -f /etc/profile.d/10-agent.sh ]] && . /etc/profile.d/10-agent.sh
+cd "$dir" || { echo "нет папки $dir"; exec bash -l; }
+trap 'echo; echo "Сервер остановлен. Запустить снова: rc-serve $dir $name"; exec bash -l' INT
+
+while :; do
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then spawn=worktree; else spawn=same-dir; fi
+  echo "== Remote Control «$name» ($dir, режим $spawn): чаты — в приложении Claude / на claude.ai/code"
+  echo "   При первом запуске подтвердите доверие к папке (y)."
+  claude remote-control --name "$name" --spawn "$spawn"
+  echo "Сервер завершился (код $?). Перезапуск через 5 с — Ctrl-C, чтобы остановить."
+  sleep 5
+done

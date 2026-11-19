@@ -1,0 +1,12 @@
+.env
+.env.bak
+install.log
+report-*.txt
+.backup/
+docker-compose.override.yml
+masks/empty
+workspace/*
+!workspace/.gitkeep
+tests/.tmp/
+__pycache__/
+*.pyc

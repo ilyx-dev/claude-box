@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Самопроверка изоляции из контейнера агента:  docker compose exec agent leak-test
+set -uo pipefail
+G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; N=$'\e[0m'
+FAIL=0
+ok()   { printf '  %s✔%s %s\n' "$G" "$N" "$*"; }
+bad()  { printf '  %s✘%s %s\n' "$R" "$N" "$*"; FAIL=1; }
+info() { printf '  %s•%s %s\n' "$Y" "$N" "$*"; }
+hdr()  { printf '\n== %s\n' "$*"; }
+
+[[ -f /shared/geo.env ]] && . /shared/geo.env
+[[ -f /etc/profile.d/00-geo.sh ]] && . /etc/profile.d/00-geo.sh
+[[ -f /etc/profile.d/10-agent.sh ]] && . /etc/profile.d/10-agent.sh
+H=${HOST_ALIAS:-host}
+
+hdr "Внешний IP (через прокси)"
+ip_a=$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)
+trace=$(curl -fsS --max-time 10 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)
+ip_b=$(sed -n 's/^ip=//p' <<<"$trace"); loc_b=$(sed -n 's/^loc=//p' <<<"$trace")
+info "ipify: ${ip_a:-нет ответа} | cloudflare: ${ip_b:-нет ответа} (${loc_b:-?}) | при старте: ${GEO_IP:-?} (${GEO_COUNTRY:-?})"
+if [[ -n $ip_a && $ip_a == "$ip_b" ]]; then ok "все сервисы видят один и тот же IP"; else bad "сервисы видят разные IP или недоступны"; fi
+[[ -n ${GEO_IP:-} && ${GEO_IP} != unknown && -n $ip_a && $ip_a != "$GEO_IP" ]] &&
+  info "IP прокси сменился с момента старта — перезапустите: docker compose restart"
+
+hdr "IPv6"
+if [[ -n $(ip -6 addr show scope global 2>/dev/null) ]]; then bad "есть глобальные IPv6-адреса"; else ok "глобальных IPv6-адресов нет"; fi
+if curl -6 -fsS --max-time 6 https://api64.ipify.org >/dev/null 2>&1; then bad "IPv6-запрос прошёл"; else ok "IPv6-трафик невозможен"; fi
+
+hdr "Попытка обойти туннель"
+WAN=$(ip -4 route show table main default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+if [[ -n $WAN ]] && curl --interface "$WAN" -fsS --max-time 6 -o /dev/null https://1.1.1.1/cdn-cgi/trace 2>/dev/null; then
+  bad "прямой выход через $WAN работает — kill-switch НЕ действует"
+else
+  ok "прямой выход через ${WAN:-eth0} заблокирован"
+fi
+if dig +time=2 +tries=1 +short @127.0.0.11 example.com >/dev/null 2>&1 && [[ -n $(dig +time=2 +tries=1 +short @127.0.0.11 example.com 2>/dev/null) ]]; then
+  bad "встроенный DNS Docker (127.0.0.11) отвечает — он резолвит через хост"
+else
+  ok "встроенный DNS Docker (резолвит через хост) заблокирован"
+fi
+
+hdr "DNS"
+grep -q '^nameserver 172.19.0.2' /etc/resolv.conf && ok "resolv.conf -> 172.19.0.2 (перехват sing-box)" || bad "resolv.conf указывает не на туннель"
+if [[ -n $(dig +short +time=4 +tries=2 example.com A 2>/dev/null) ]]; then
+  ok "DNS работает (перехват sing-box -> DoH внутри прокси)"
+else
+  bad "DNS не работает"
+fi
+res_ip() { dig +short +time=5 +tries=2 "$@" TXT o-o.myaddr.l.google.com 2>/dev/null | tr -d '"' | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1; }
+org_of() { curl -fsS --max-time 8 "https://ipwho.is/$1" 2>/dev/null | jq -r '.connection.org // .connection.isp // empty' 2>/dev/null; }
+r1=$(res_ip); r2=$(res_ip @8.8.8.8)
+if [[ -n $r1 ]]; then
+  o1=$(org_of "$r1")
+  info "DNS-серверы сайтов видят резолвер $r1 ${o1:+($o1)} — DoH-провайдер, а не ваш интернет-провайдер"
+  if [[ -n $r2 ]]; then
+    o2=$(org_of "$r2")
+    if [[ $o1 == "$o2" ]]; then ok "запрос к «чужому» DNS (8.8.8.8:53) тоже перехвачен"; else bad "запрос к 8.8.8.8:53 прошёл мимо перехвата ($r2 ${o2:+$o2})"; fi
+  fi
+else
+  info "не удалось определить резолвер (o-o.myaddr.l.google.com) — не критично"
+fi
+
+hdr "Часовой пояс и язык"
+info "в контейнере: TZ=${TZ:-?}  date: $(date '+%F %T %Z %z')  LANG=${LANG:-?}  Accept-Language браузера: ${GEO_ACCEPT_LANG:-?}"
+if [[ -n ${GEO_TZ:-} && ${TZ:-} == "$GEO_TZ" ]]; then
+  ok "часовой пояс = гео прокси ($GEO_TZ; ${GEO_SOURCE:-?})"
+else
+  bad "TZ=${TZ:-?}, а гео прокси — ${GEO_TZ:-?} (docker compose restart)"
+fi
+g1=$(curl -fsS --max-time 8 https://ipwho.is/ 2>/dev/null | jq -r '"\(.country_code) \(.timezone.id)"' 2>/dev/null)
+g2=$(curl -fsS --max-time 8 https://api.ipapi.is/ 2>/dev/null | jq -r '"\(.location.country_code | ascii_upcase) \(.location.timezone)"' 2>/dev/null)
+g3=$(curl -fsS --max-time 8 https://ipinfo.io/json 2>/dev/null | jq -r '"\(.country) \(.timezone)"' 2>/dev/null)
+info "базы геолокации сейчас: ipwho.is: ${g1:-—} | ipapi.is: ${g2:-—} | ipinfo.io: ${g3:-—}"
+
+if [[ ${BOX_PROFILE:-server} == mac ]]; then hdr "Диск Mac и подтверждения"; else hdr "Подтверждения и доступ к хосту"; fi
+if [[ -d /mac/home ]]; then
+  if touch /mac/home/.claude-box-rw-test 2>/dev/null; then bad "/mac/home доступен на ЗАПИСЬ (должен быть только чтение)"
+  else ok "/mac/home смонтирован только для чтения"; fi
+  for d in .ssh Library/Keychains Library/Cookies; do
+    [[ -d /mac/home/$d ]] || continue
+    if [[ -z $(ls -A "/mac/home/$d" 2>/dev/null) ]]; then ok "секреты скрыты: ~/$d пуст"; else bad "~/$d виден агенту — перезапустите scripts/gen-mac-mounts.sh"; fi
+  done
+else
+  [[ ${BOX_PROFILE:-server} == mac ]] && info "/mac/home не смонтирован (scripts/gen-mac-mounts.sh не запускался)"
+fi
+if jq -e '.permissions.disableBypassPermissionsMode == "disable" and (.hooks.PreToolUse | length > 0)' /etc/claude-code/managed-settings.json >/dev/null 2>&1; then
+  ok "политика подтверждений активна (bypass выключен, хук host-guard установлен)"
+else
+  bad "нет managed-политики /etc/claude-code/managed-settings.json"
+fi
+hg_in='{"tool_name":"Bash","tool_input":{"command":"nc -z 192.168.1.1 80"},"permission_mode":"default","cwd":"/tmp"}'
+if /usr/local/lib/claude-box/host-guard.sh <<<"$hg_in" 2>/dev/null | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  ok "попытки достучаться до локальной сети из контейнера хук останавливает с подсказкой"
+else
+  bad "хук host-guard не останавливает обращения к локальной сети"
+fi
+if jq -e '.hooks.SessionStart | length > 0' /etc/claude-code/managed-settings.json >/dev/null 2>&1 && /usr/local/bin/box-info --context 2>/dev/null | jq -e '.hookSpecificOutput.additionalContext | length > 200' >/dev/null 2>&1; then
+  ok "сводка окружения подаётся агенту в начале каждой сессии (box-info)"
+else
+  bad "нет сводки окружения для новых сессий (SessionStart / box-info)"
+fi
+if runuser -u agent -- sudo -n true 2>/dev/null; then info "sudo для агента ВКЛЮЧЁН (AGENT_SUDO=1)"; else ok "sudo для агента выключен"; fi
+if [[ -f /etc/ssh/ssh_config.d/10-claude-box-host.conf ]]; then
+  if runuser -u agent -- ssh -o BatchMode=yes -o ConnectTimeout=6 "$H" true 2>/dev/null; then ok "SSH к хосту работает (ssh $H)"
+  else info "SSH к хосту пока не работает: на Mac включите «Удалённый вход»; ключ агента добавляет install.sh"; fi
+fi
+
+if [[ ${HOST_DOCKER:-0} == ro ]]; then
+  hdr "Docker хоста (только чтение, контейнер docker-ro)"
+  if v=$(runuser -u agent -- env DOCKER_HOST="$DOCKER_HOST" docker version --format '{{.Server.Version}}' 2>/dev/null); then ok "чтение работает: Docker $v"
+  else bad "docker-ro не отвечает (${DOCKER_HOST:-?})"; fi
+  if runuser -u agent -- env DOCKER_HOST="$DOCKER_HOST" docker run --rm hello-world >/dev/null 2>&1; then bad "через docker-ro удалось ЗАПУСТИТЬ контейнер — фильтр не работает!"
+  else ok "изменения через docker-ro запрещены (docker run отклонён)"; fi
+fi
+
+if [[ ${BROWSER:-0} == 1 ]]; then
+  hdr "Браузер (контейнер browser)"
+  ver=$(curl -fsS --max-time 4 http://127.0.0.1:9222/json/version 2>/dev/null | jq -r '.Browser // empty' 2>/dev/null)
+  [[ -n $ver ]] && ok "Chrome доступен по CDP: $ver" || bad "Chrome по CDP не отвечает (docker compose ps browser)"
+  info "в браузере агента (noVNC) откройте browserleaks.com/webrtc, /ip, /dns и ipleak.net"
+fi
+
+echo
+if ((FAIL)); then printf '%sЕсть проблемы — см. ✘ выше.%s\n' "$R" "$N"; exit 1; else printf '%sУтечек не найдено.%s\n' "$G" "$N"; fi

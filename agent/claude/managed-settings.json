@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "ask": [
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(sftp *)",
+      "Bash(rsync *:*)",
+      "Bash(sshpass *)",
+      "Edit(//home/agent/.ssh/**)",
+      "Edit(//etc/ssh/**)"
+    ],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/lib/claude-box/host-guard.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/box-info --context",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

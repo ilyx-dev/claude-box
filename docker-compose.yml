@@ -1,0 +1,160 @@
+# claude-box — Claude Code в Docker, весь трафик через SOCKS5 (kill-switch, без утечек DNS/IPv6/UDP).
+# Один файл для всех машин. Что включено, решает .env (его пишет install.sh):
+#   COMPOSE_PROJECT_NAME  — имя проекта (тома: <имя>_agent-home и т.д.)
+#   COMPOSE_PROFILES      — дополнительные сервисы: browser (Chrome + noVNC), docker (чтение Docker хоста)
+# На Mac рядом лежит docker-compose.override.yml (диск Mac для агента), его генерирует scripts/gen-mac-mounts.sh.
+
+services:
+  # Сетевой шлюз: владеет network namespace. Весь трафик -> tun0 -> SOCKS5, nftables kill-switch.
+  gateway:
+    build:
+      context: ./gateway
+      args:
+        SINGBOX_IMAGE: ${SINGBOX_IMAGE:-ghcr.io/sagernet/sing-box:latest}
+    container_name: ${BOX_PREFIX:-claude}-gateway
+    hostname: ${BOX_HOSTNAME:-claude-box}   # имя машины в Remote Control (agent и browser наследуют его)
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
+      # мёртвое соединение с неподтверждёнными данными рвётся за ~50 с, а не за ~15 мин (умолчание 15)
+      net.ipv4.tcp_retries2: ${TCP_RETRIES2:-7}
+    environment:
+      SOCKS_HOST: ${SOCKS_HOST:?задайте SOCKS_HOST в .env}
+      SOCKS_PORT: ${SOCKS_PORT:?задайте SOCKS_PORT в .env}
+      SOCKS_USER: ${SOCKS_USER:-}
+      SOCKS_PASS: ${SOCKS_PASS:-}
+      ALLOW_UDP: ${ALLOW_UDP:-0}
+      DOH_SERVER: ${DOH_SERVER:-1.1.1.1}
+      DOCKER_SUBNET: ${DOCKER_SUBNET:-172.29.0.0/24}
+      LAN_CIDRS: ${LAN_CIDRS:-}
+      DIRECT_CIDRS: ${DIRECT_CIDRS:-}
+      HOST_ACCESS: ${HOST_ACCESS:-1}
+      HOST_PORTS: ${HOST_SSH_PORT:-22}
+      HOST_DOCKER: ${HOST_DOCKER:-0}
+      DOCKER_RO_IP: ${DOCKER_RO_IP:-172.29.0.3}
+      SERVICE_PORTS: "7681,6080"
+      GEO_TZ: ${GEO_TZ:-}
+      GEO_LOCALE: ${GEO_LOCALE:-}
+      GEO_ACCEPT_LANG: ${GEO_ACCEPT_LANG:-}
+      SB_LOG_LEVEL: ${SB_LOG_LEVEL:-warn}
+      SB_KEEPALIVE: ${SB_KEEPALIVE-15s}
+      SB_KEEPALIVE_INTERVAL: ${SB_KEEPALIVE_INTERVAL:-5s}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # публикуются на шлюзе (agent и browser живут в его сетевом namespace); по умолчанию только localhost
+      - "${BIND_ADDR:-127.0.0.1}:${TTYD_PORT:-7681}:7681"    # веб-терминал (tmux + Claude Code)
+      - "${BIND_ADDR:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"   # noVNC: браузер агента (если BROWSER=1)
+    volumes:
+      - geo:/shared
+    networks: [egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 25s
+      retries: 3
+      start_period: 90s
+
+  # Агент: Claude Code в tmux + ttyd (+ Chrome DevTools MCP). Своей сети нет — только namespace шлюза.
+  agent:
+    build: ./agent
+    container_name: ${BOX_PREFIX:-claude}-agent
+    restart: unless-stopped
+    network_mode: "service:gateway"
+    depends_on:
+      gateway:
+        condition: service_healthy
+        restart: true
+    # Без NET_ADMIN/NET_RAW агент не может трогать маршруты и kill-switch или слать «сырые» пакеты.
+    cap_drop: [NET_RAW, MKNOD, AUDIT_WRITE, SYS_CHROOT, SETFCAP]
+    stop_grace_period: 20s
+    environment:
+      BOX_PROFILE: ${PROFILE:-server}
+      BOX_PREFIX: ${BOX_PREFIX:-claude}
+      BOX_PROJECT: ${COMPOSE_PROJECT_NAME:-claude-box}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TTYD_USER: ${TTYD_USER:-agent}
+      TTYD_PASSWORD: ${TTYD_PASSWORD:?задайте TTYD_PASSWORD в .env}
+      CLAUDE_RC: ${CLAUDE_RC:-1}
+      RC_NAME: ${RC_NAME:-claude-box}
+      RC_SERVER: ${RC_SERVER:-single}
+      RC_PROJECTS: ${RC_PROJECTS:-auto}
+      RC_PREFIX: ${RC_PREFIX-}
+      CLAUDE_ARGS: ${CLAUDE_ARGS:-}
+      BROWSER: ${BROWSER:-0}
+      DEVTOOLS_MCP: ${DEVTOOLS_MCP:-1}
+      AGENT_SUDO: ${AGENT_SUDO:-0}
+      HOST_ACCESS: ${HOST_ACCESS:-1}
+      HOST_ALIAS: ${HOST_ALIAS:-host}
+      HOST_SSH_USER: ${HOST_SSH_USER:-}
+      HOST_SSH_PORT: ${HOST_SSH_PORT:-22}
+      HOST_DOCKER: ${HOST_DOCKER:-0}
+      SSH_HOSTS: ${SSH_HOSTS:-}
+      # для box-info и host-guard: что открыто мимо прокси, где /workspace на хосте
+      BOX_DIRECT_CIDRS: ${DIRECT_CIDRS:-}
+      BOX_DOCKER_SUBNET: ${DOCKER_SUBNET:-172.29.0.0/24}
+      BOX_DOCKER_RO: ${DOCKER_RO_IP:-172.29.0.3}:2375
+      BOX_HOST_WORKSPACE: ${WORKSPACE_DIR:-./workspace}
+      BOX_HOST_PROJECT: ${PWD:-}
+    volumes:
+      - geo:/shared:ro
+      - agent-home:/home/agent                       # логин Claude Code, история, SSH-ключ агента
+      - ${WORKSPACE_DIR:-./workspace}:/workspace     # общая рабочая папка (видна и браузеру)
+      - ./prompts:/opt/claude-box/prompts:ro         # готовые сценарии
+
+  # Браузер агента: Chrome на виртуальном дисплее, noVNC, CDP 127.0.0.1:9222. Тоже только через шлюз.
+  browser:
+    profiles: [browser]
+    build: ./browser
+    container_name: ${BOX_PREFIX:-claude}-browser
+    restart: unless-stopped
+    network_mode: "service:gateway"
+    depends_on:
+      gateway:
+        condition: service_healthy
+        restart: true
+    cap_drop: [NET_RAW, MKNOD, AUDIT_WRITE, SYS_CHROOT, SETFCAP]
+    shm_size: "2gb"
+    environment:
+      VNC_PASSWORD: ${VNC_PASSWORD:-change-me}
+      SCREEN: ${SCREEN:-1600x900x24}
+    volumes:
+      - geo:/shared:ro
+      - browser-home:/home/browser                   # профиль Chrome (логины на сайтах)
+      - ${WORKSPACE_DIR:-./workspace}:/workspace     # загрузки/выгрузки файлов на сайты
+
+  # Docker хоста только для чтения: агент видит контейнеры, логи, inspect, stats — и ничего не может изменить.
+  # Изменения — только `ssh <хост> 'docker …'` с подтверждением пользователя.
+  docker-ro:
+    profiles: [docker]
+    build: ./docker-ro
+    container_name: ${BOX_PREFIX:-claude}-docker-ro
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+    networks:
+      egress:
+        ipv4_address: ${DOCKER_RO_IP:-172.29.0.3}
+
+networks:
+  egress:
+    driver: bridge
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.29.0.0/24}
+          # динамические адреса — из верхней половины, чтобы не занять статический адрес docker-ro
+          ip_range: ${DOCKER_IP_RANGE:-172.29.0.128/25}
+
+volumes:
+  geo:
+  agent-home:
+  browser-home:

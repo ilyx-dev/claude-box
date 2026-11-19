@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Запуск Claude Code в окне tmux "claude". После выхода остаётся shell; повторный запуск: claude-session
+[[ -f /etc/profile.d/00-geo.sh ]] && . /etc/profile.d/00-geo.sh
+[[ -f /etc/profile.d/10-agent.sh ]] && . /etc/profile.d/10-agent.sh
+cd "${WORKDIR:-/workspace}" || cd /workspace
+
+args=()
+for d in /mac/home /opt/claude-box/prompts; do
+  [[ -d $d ]] && args+=(--add-dir "$d")
+done
+# при RC_SERVER=single Remote Control обслуживает отдельный сервер (окно rc) — здесь его не дублируем
+if [[ ${CLAUDE_RC:-1} == 1 && ${RC_SERVER:-single} != single ]]; then
+  if [[ -n ${RC_NAME:-} ]]; then args+=(--remote-control "$RC_NAME"); else args+=(--remote-control); fi
+fi
+# shellcheck disable=SC2206  # CLAUDE_ARGS намеренно разбивается на слова
+extra=(${CLAUDE_ARGS:-})
+
+if ! claude auth status >/dev/null 2>&1; then
+  if [[ ${BROWSER:-0} == 1 ]]; then
+    hint=" Ссылку можно открыть в браузере агента (noVNC) — так вход тоже пройдёт через прокси —
+ или у себя; полученный код вставьте сюда."
+  else
+    hint=" Ссылку откройте у себя в браузере, полученный код вставьте сюда."
+  fi
+  cat <<EOF
+────────────────────────────────────────────────────────────────────────
+ Первый запуск: войдите командой /login (аккаунт claude.ai).
+$hint
+ Чаты с телефона и claude.ai/code обслуживает сервер Remote Control в окне tmux «rc».
+────────────────────────────────────────────────────────────────────────
+EOF
+fi
+
+claude "${args[@]}" "${extra[@]}"
+rc=$?
+echo
+echo "Claude Code завершился (код $rc). Запустить снова: claude-session   |   продолжить последний диалог: claude -c"
+exec bash -l

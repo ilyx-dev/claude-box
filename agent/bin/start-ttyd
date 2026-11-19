@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Веб-терминал: каждое подключение (ПК, телефон) открывает ОДНУ и ту же tmux-сессию "main".
+set -euo pipefail
+[[ -f /etc/profile.d/00-geo.sh ]] && . /etc/profile.d/00-geo.sh
+CRED="${TTYD_USER:-agent}:${TTYD_PASSWORD:?TTYD_PASSWORD is required}"
+unset TTYD_PASSWORD
+exec /usr/local/bin/ttyd \
+  --port 7681 \
+  --writable \
+  --credential "$CRED" \
+  --client-option titleFixed="claude-box" \
+  --client-option fontSize="${TTYD_FONT_SIZE:-14}" \
+  --client-option disableLeaveAlert=true \
+  tmux new-session -A -s main

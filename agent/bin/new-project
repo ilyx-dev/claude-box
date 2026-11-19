@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# new-project <имя> ["краткое описание"] — новый проект в /workspace по общим правилам:
+# папка + git + CLAUDE.md + README.md + .gitignore, строка в /workspace/CLAUDE.md, сервер Remote Control.
+set -euo pipefail
+name=${1:-}
+desc=${2:-}
+if [[ ! $name =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]]; then
+  echo "Использование: new-project <имя> [\"описание\"]"
+  echo "Имя: латиница в нижнем регистре, цифры и дефис, например: my-site"
+  exit 1
+fi
+dir=/workspace/$name
+if [[ -e $dir ]]; then echo "Уже существует: $dir"; exit 1; fi
+
+mkdir -p "$dir"
+cd "$dir"
+git init -q -b main
+
+cat >CLAUDE.md <<EOF
+# $name
+
+${desc:-Описание проекта.}
+
+## Стек
+(дополни после изучения проекта или командой /init)
+
+## Как запускать и тестировать
+
+## Договорённости и подводные камни
+EOF
+printf '# %s\n\n%s\n' "$name" "${desc:-}" >README.md
+printf '%s\n' '.env' '.env.*' '!.env.example' 'node_modules/' '__pycache__/' '.venv/' '.DS_Store' '.claude/worktrees/' >.gitignore
+git add -A
+git -c user.name="claude-agent" -c user.email="agent@claude-box.local" commit -qm "Новый проект: $name"
+
+# строка в общий список проектов
+ws=/workspace/CLAUDE.md
+line="- \`$name\` — ${desc:-без описания}"
+if [[ -f $ws ]]; then
+  if grep -q 'new-project добавляет строки' "$ws"; then
+    tmp=$(mktemp)
+    L="$line" awk '{ print } /new-project добавляет строки/ { print ENVIRON["L"] }' "$ws" >"$tmp" && cat "$tmp" >"$ws" && rm -f "$tmp"
+  else
+    printf '%s\n' "$line" >>"$ws"
+  fi
+fi
+
+/usr/local/bin/rc-sync >/dev/null 2>&1 || true
+
+echo "Готово: $dir"
+if [[ ${RC_SERVER:-single} == projects ]]; then
+  echo "Сервер Remote Control: ${RC_PREFIX-mac-}$name (окно tmux rc-$name)."
+  echo "Один раз подтвердите доверие к папке: подключитесь к tmux и откройте окно rc-$name (Ctrl-b w)."
+else
+  echo "Новый чат по проекту: в приложении Claude откройте ${RC_NAME:-claude-box} и начните с «проект $name: …»."
+fi

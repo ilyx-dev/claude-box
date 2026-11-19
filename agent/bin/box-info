@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# box-info — где находится агент и что ему доступно (актуальное состояние).
+#   box-info            — сводка с быстрыми проверками (для вас и для агента)
+#   box-info --context  — JSON для SessionStart-хука: та же сводка без сетевых проверок,
+#                         Claude Code подаёт её агенту в начале каждой сессии
+set -uo pipefail
+mode=${1:-}
+[[ -f /etc/profile.d/10-agent.sh ]] && . /etc/profile.d/10-agent.sh
+
+PROFILE=${BOX_PROFILE:-server}
+H=${HOST_ALIAS:-host}
+GEO_FILE=/shared/geo.env
+GEO_IP="" GEO_COUNTRY="" GEO_TZ=""
+# shellcheck disable=SC1090
+[[ -r $GEO_FILE ]] && . "$GEO_FILE" 2>/dev/null
+
+host_conf=/etc/ssh/ssh_config.d/10-claude-box-host.conf
+host_user="" host_port=""
+if [[ -r $host_conf ]]; then
+  host_user=$(awk '$1 == "User" { print $2; exit }' "$host_conf")
+  host_port=$(awk '$1 == "Port" { print $2; exit }' "$host_conf")
+fi
+host_ip=$(awk '$1 ~ /^[0-9.]+$/ { for (i = 2; i <= NF; i++) if ($i == "host.docker.internal") { print $1; exit } }' /etc/hosts 2>/dev/null)
+extra_hosts=$(awk '$1 == "Host" { printf "%s%s", sep, $2; sep = ", " }' /etc/ssh/ssh_config.d/20-claude-box-hosts.conf 2>/dev/null)
+
+tcp_open() { timeout "${3:-1}" bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
+
+ws_host=${BOX_HOST_WORKSPACE:-}
+if [[ -n $ws_host && $ws_host == ./* && -n ${BOX_HOST_PROJECT:-} ]]; then ws_host="${BOX_HOST_PROJECT%/}/${ws_host#./}"; fi
+[[ -n $ws_host ]] || ws_host="папка WORKSPACE_DIR из .env на хосте"
+
+projects=()
+for d in /workspace/*/; do
+  [[ -d $d ]] || continue
+  n=$(basename "$d")
+  [[ $n == _* || $n == .* || $n == downloads ]] && continue
+  projects+=("$n")
+done
+plist="пока нет"
+((${#projects[@]})) && plist=$(printf '%s, ' "${projects[@]}") && plist=${plist%, }
+
+direct=${BOX_DIRECT_CIDRS:-}
+direct=${direct//,/ }
+direct=$(echo $direct)
+
+if [[ $PROFILE == mac ]]; then where="на MacBook пользователя, а не на самом Mac"; hname="Mac (macOS)"
+else where="на сервере пользователя, а не на самом сервере"; hname="сервер"; fi
+
+build() {
+  echo "Окружение claude-box (профиль $PROFILE): сводка на начало сессии. Правила — /etc/claude-code/CLAUDE.md, текущее состояние — команда box-info."
+  echo "- Ты в Docker-контейнере ${BOX_PREFIX:-claude}-agent $where. Пользователь agent, без sudo."
+  echo "- Интернет только через SOCKS5-прокси: выход ${GEO_IP:-?} (${GEO_COUNTRY:-?}, ${GEO_TZ:-?}). Прямого выхода нет."
+  echo "- Локальная сеть хоста (192.168.x.x, 10.x.x.x, 172.16–31.x.x, 169.254.x.x, 100.64–127.x.x) из контейнера недоступна."
+  echo "  TCP-подключение к любому адресу и порту здесь «успешно» из-за TUN: проверка портов (nc, telnet, nmap) ничего не доказывает."
+  [[ -n $direct ]] && echo "  Исключение, которое открыл пользователь (DIRECT_CIDRS): $direct. Обращения туда тоже требуют его подтверждения."
+  if [[ ${HOST_ACCESS:-1} == 1 && -r $host_conf ]]; then
+    echo "- Хост ($hname): только \`ssh $H '<команда>'\` (пользователь ${host_user:-?}). Каждую SSH-команду подтверждает пользователь."
+    echo "  Устройства локальной сети — тоже через хост: \`ssh $H 'curl -s http://<ip>/…'\`, \`ssh $H 'ssh <user>@<ip> \"…\"'\`."
+  else
+    echo "- Доступ к хосту по SSH выключен (HOST_ACCESS=0): ни хост, ни его локальная сеть недоступны — такие шаги отдавай пользователю."
+  fi
+  [[ -n $extra_hosts ]] && echo "- Другие серверы по SSH (через прокси, с подтверждением): $extra_hosts."
+  if [[ ${HOST_DOCKER:-0} == ro ]]; then
+    echo "- Docker хоста: команда docker в контейнере только для чтения (ps, logs, inspect, stats, events). Изменения — \`ssh $H 'docker …'\` с подтверждением."
+  fi
+  [[ $PROFILE == mac ]] && echo "- Диск Mac: /mac/home, только чтение, секреты скрыты."
+  echo "- /workspace — это $ws_host на хосте."
+  if [[ ${BROWSER:-0} == 1 ]]; then
+    if tcp_open 127.0.0.1 9222 1; then cdp="работает"; else cdp="не отвечает"; fi
+    echo "- Браузер: Chrome в контейнере ${BOX_PREFIX:-claude}-browser, MCP chrome-devtools (CDP 127.0.0.1:9222) — $cdp. Сетевые запросы страниц видны через этот MCP."
+  else
+    echo "- Браузера нет (BROWSER=0)."
+  fi
+  echo "- Проекты в /workspace: $plist. Если пользователь не назвал проект, спроси, затем прочитай /workspace/<проект>/CLAUDE.md."
+  echo "- Пароли не подбирай и пароли по умолчанию не пробуй: нужен доступ — спроси пользователя. Ограничения (хуки, сеть, маски) не исследуй и не обходи. Если что-то заблокировано, объясни это пользователю и предложи разрешённый путь."
+}
+
+case "$mode" in
+  --context)
+    build | jq -Rs '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: .}}'
+    ;;
+  -h|--help)
+    sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    build
+    echo
+    echo "Проверки:"
+    if curl -fsS -o /dev/null --max-time 6 https://www.gstatic.com/generate_204 2>/dev/null ||
+      curl -fsS -o /dev/null --max-time 6 https://cp.cloudflare.com/ 2>/dev/null; then
+      echo "  ✔ интернет через прокси работает"
+    else
+      echo "  ✘ интернет через прокси не отвечает: проверьте прокси (docker logs ${BOX_PREFIX:-claude}-gateway на хосте)"
+    fi
+    if [[ ${HOST_ACCESS:-1} == 1 && -n $host_ip ]]; then
+      if tcp_open "$host_ip" "${host_port:-22}" 2; then echo "  ✔ SSH-порт хоста отвечает (сама команда ssh $H — с подтверждением)"
+      else echo "  ✘ SSH-порт хоста не отвечает (на Mac — «Удалённый вход»; на сервере — sshd и файрвол)"; fi
+    fi
+    if [[ ${HOST_DOCKER:-0} == ro ]]; then
+      if v=$(docker version --format '{{.Server.Version}}' 2>/dev/null); then echo "  ✔ Docker хоста (только чтение): $v, контейнеров $(docker ps -q 2>/dev/null | wc -l) запущено"
+      else echo "  ✘ docker-ro не отвечает (контейнер ${BOX_PREFIX:-claude}-docker-ro)"; fi
+    fi
+    ;;
+esac

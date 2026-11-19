@@ -1,0 +1,19 @@
+# Второй слой kill-switch на самом сервере (DOCKER-USER): из подсети claude-box наружу — только на SOCKS5.
+# Ставит install.sh (подставляет реальный путь вместо @DIR@). Вручную:
+#   sed "s#@DIR@#$(pwd)#g" scripts/claude-box-firewall.service | sudo tee /etc/systemd/system/claude-box-firewall.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now claude-box-firewall
+[Unit]
+Description=claude-box host egress guard (DOCKER-USER)
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/scripts/host-firewall.sh
+ExecStop=@DIR@/scripts/host-firewall.sh remove
+
+[Install]
+WantedBy=multi-user.target docker.service

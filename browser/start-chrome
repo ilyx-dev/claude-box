@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Видимый Chrome на дисплее :1. CDP на 127.0.0.1:9222 (общая сеть со шлюзом и агентом).
+# Chrome 136+ разрешает remote debugging только с нестандартным профилем — используем ~/chrome-profile.
+set -euo pipefail
+[[ -f /etc/profile.d/00-geo.sh ]] && . /etc/profile.d/00-geo.sh
+
+BIN=$(readlink -f /usr/local/bin/agent-browser)
+UDD="$HOME/chrome-profile"
+mkdir -p "$UDD/Default" "$HOME/Downloads"
+rm -f "$UDD"/SingletonLock "$UDD"/SingletonSocket "$UDD"/SingletonCookie
+
+PREF="$UDD/Default/Preferences"
+AL="${ACCEPT_LANG:-en-US,en}"
+if [[ -s $PREF ]] && jq -e . "$PREF" >/dev/null 2>&1; then
+  tmp=$(mktemp)
+  jq --arg al "$AL" --arg dl /workspace/downloads '.intl.accept_languages = $al | .intl.selected_languages = $al
+      | .download.default_directory = $dl | .profile.exit_type = "Normal" | .profile.exited_cleanly = true' "$PREF" >"$tmp" && mv "$tmp" "$PREF"
+else
+  jq -n --arg al "$AL" --arg dl /workspace/downloads \
+    '{intl: {accept_languages: $al, selected_languages: $al}, download: {default_directory: $dl, prompt_for_download: false}}' >"$PREF"
+fi
+mkdir -p /workspace/downloads 2>/dev/null || true
+
+SCREEN=${SCREEN:-1600x900x24}
+W=${SCREEN%%x*}; REST=${SCREEN#*x}; H=${REST%%x*}
+for _ in $(seq 1 30); do xdpyinfo -display :1 >/dev/null 2>&1 && break; sleep 0.5; done
+
+exec "$BIN" \
+  --user-data-dir="$UDD" \
+  --remote-debugging-port=9222 \
+  --no-first-run --no-default-browser-check \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --password-store=basic \
+  --lang="${CHROME_LANG:-en-US}" \
+  --accept-lang="$AL" \
+  --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
+  --disable-quic \
+  --hide-crash-restore-bubble \
+  --window-position=0,0 --window-size="$W,$H" --start-maximized \
+  about:blank
