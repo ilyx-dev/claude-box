@@ -37,6 +37,7 @@ step "docker-compose*.yml (YAML)" yaml
 step "compose: noVNC (6080) публикуется только в docker-compose.browser.yml" novnc_only_browser
 step "host-guard" bash tests/host-guard.sh
 step "docker-ro" bash tests/docker-ro.sh
+step "маски диска Mac: .env, .backup, ~/.orbstack/ssh, ~/.Trash (gen-mac-mounts)" bash tests/gen-mac-mounts.sh
 step "установщик: обычная установка (сухой прогон)" bash -c 'bash tests/install-dryrun.sh 2>&1 | tail -n1 | grep -q "exit=0"'
 step "установщик: предупреждает о CB_TEST_TUN_DEV" bash -c 'bash tests/install-dryrun.sh 2>&1 | grep -q "задана CB_TEST_TUN_DEV=/dev/null"'
 step "установщик: без браузера COMPOSE_FILE без noVNC" cf_default

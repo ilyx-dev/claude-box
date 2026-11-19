@@ -76,10 +76,19 @@ if [[ ${BOX_PROFILE:-server} == mac ]]; then hdr "Диск Mac и подтвер
 if [[ -d /mac/home ]]; then
   if touch /mac/home/.claude-box-rw-test 2>/dev/null; then bad "/mac/home доступен на ЗАПИСЬ (должен быть только чтение)"
   else ok "/mac/home смонтирован только для чтения"; fi
-  for d in .ssh Library/Keychains Library/Cookies; do
+  for d in .ssh .orbstack/ssh Library/Keychains Library/Cookies; do
     [[ -d /mac/home/$d ]] || continue
     if [[ -z $(ls -A "/mac/home/$d" 2>/dev/null) ]]; then ok "секреты скрыты: ~/$d пуст"; else bad "~/$d виден агенту — перезапустите scripts/gen-mac-mounts.sh"; fi
   done
+  # Копии настроек claude-box с паролями (прокси, веб-терминал, noVNC): резервные .backup/*/.env, старые
+  # установки. Только два уровня вглубь по шаблонам — без обхода всего диска. Содержимое не выводится.
+  envs=()
+  for f in /mac/home/*/.env /mac/home/*/*/.env /mac/home/*/.backup/*/.env /mac/home/*/*/.backup/*/.env; do
+    [[ -f $f && -s $f ]] && grep -qE '^SOCKS_(HOST|PASS)=' "$f" 2>/dev/null && envs+=("~${f#/mac/home}")
+  done
+  if ((${#envs[@]})); then
+    bad "агенту видны настройки claude-box с паролями: ${envs[*]} — старые установки удалите (не в Корзину: её агент тоже видит), для текущей ./install.sh --update обновит маски"
+  else ok "копий .env claude-box с паролями агенту не видно"; fi
 else
   [[ ${BOX_PROFILE:-server} == mac ]] && info "/mac/home не смонтирован (scripts/gen-mac-mounts.sh не запускался)"
 fi

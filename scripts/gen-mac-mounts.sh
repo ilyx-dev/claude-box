@@ -20,11 +20,14 @@ mkdir -p masks
 #  - ~/OrbStack: файлы самих контейнеров/томов OrbStack (NFS из VM). Обход этой папки из контейнера
 #    уходит в рекурсию (контейнер видит сам себя) и может повесить OrbStack.
 #  - облачные папки (iCloud Drive, Dropbox, Google Drive…): чтение «облачных» файлов запускает их скачивание.
-#  - секреты.
+#  - секреты; ~/.orbstack/ssh — закрытый ключ OrbStack (root в его Linux-машинах);
+#    ~/.Trash — удалённые файлы, среди них бывают и старые .env (логи ~/.orbstack/log остаются видны).
 DIRS="OrbStack
 Library/CloudStorage
 Library/Mobile Documents
+.Trash
 .ssh
+.orbstack/ssh
 .gnupg
 .aws
 .azure
@@ -96,7 +99,8 @@ FILES=".netrc
     fi
   done
 
-  # .env этого проекта (пароли прокси и веб-интерфейсов), если проект лежит внутри домашней папки
+  # .env этого проекта (пароли прокси и веб-интерфейсов) и его копии, которые install.sh кладёт при каждом
+  # запуске в .backup/<время>/.env, — если проект лежит внутри домашней папки
   case "$PROJECT/" in
     "$H"/*)
       rel=${PROJECT#"$H"/}
@@ -106,6 +110,12 @@ FILES=".netrc
         echo "        target: $(yq "/mac/home/$rel/.env")"
         echo "        read_only: true"
       fi
+      # каталог нужен заранее: точку монтирования внутри /mac/home (только чтение) Docker создать не сможет
+      mkdir -p "$PROJECT/.backup"
+      echo "      - type: tmpfs"
+      echo "        target: $(yq "/mac/home/$rel/.backup")"
+      echo "        tmpfs:"
+      echo "          size: 1m"
       ;;
   esac
 } > "$OUT"
